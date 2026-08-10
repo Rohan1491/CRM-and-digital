@@ -163,6 +163,15 @@ try { db.exec("ALTER TABLE customers_v2 ADD COLUMN country TEXT DEFAULT ''"); } 
 try { db.exec("ALTER TABLE products ADD COLUMN flag_out_of_stock INTEGER DEFAULT 0"); } catch(e) {}
 try { db.exec("ALTER TABLE products ADD COLUMN flag_for_internal INTEGER DEFAULT 0"); } catch(e) {}
 try { db.exec("ALTER TABLE team_members ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE products ADD COLUMN quantity REAL DEFAULT 0"); } catch(e) {}
+try { db.exec(`CREATE TABLE IF NOT EXISTS product_stock_movements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL,
+  change_qty REAL NOT NULL,
+  reason TEXT NOT NULL,
+  reference TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+)`); } catch(e) {}
 try { db.exec(`CREATE TABLE IF NOT EXISTS proforma_invoices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   customer_id INTEGER NOT NULL,
@@ -174,6 +183,8 @@ try { db.exec(`CREATE TABLE IF NOT EXISTS proforma_invoices (
   total REAL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 )`); } catch(e) {}
+try { db.exec("ALTER TABLE proforma_invoices ADD COLUMN paid_at TEXT DEFAULT NULL"); } catch(e) {}
+try { db.exec("ALTER TABLE proforma_invoices ADD COLUMN dispatched_at TEXT DEFAULT NULL"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_wa_phone ON wa_messages(phone)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_wa_customer ON wa_messages(customer_id)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_phones_customer ON customer_phones(customer_id)"); } catch(e) {}
@@ -188,6 +199,7 @@ try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_phone ON customers_v2(phone)")
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_updated ON customers_v2(updated_at)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_assigned ON customers_v2(assigned_to)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_pi_customer ON proforma_invoices(customer_id)"); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_stockmov_product ON product_stock_movements(product_id)"); } catch(e) {}
 
 // Backfill: copy existing customers_v2.phone into customer_phones as primary, if not already present
 try {
@@ -783,6 +795,26 @@ app.put('/api/products/:id', (req, res) => {
   db.prepare(`UPDATE products SET sku=?,category=?,name=?,price=?,new_price=?,availability=?,unit=?,min_quantity=?,dimensions=?,details=?,specs=?,applications=?,flag_available=?,flag_out_of_stock=?,flag_for_internal=?,updated_at=datetime('now') WHERE id=?`)
     .run(p.sku, p.category, p.name, p.price, p.new_price || '', p.availability, p.unit, p.min_quantity, p.dimensions || '', p.details || '', JSON.stringify(p.specs || {}), p.applications || '', p.flag_available?1:0, p.flag_out_of_stock?1:0, p.flag_for_internal?1:0, req.params.id);
   res.json({ success: true });
+});
+
+// ── Inventory (Diagram 1: quantity lives on products, keyed by products.id) ──
+app.post('/api/products/:id/adjust-stock', (req, res) => {
+  const { delta, reason } = req.body;
+  const change = parseFloat(delta);
+  if (!change || Number.isNaN(change)) return res.status(400).json({ error: 'delta must be a non-zero number' });
+  const p = db.prepare('SELECT id, quantity FROM products WHERE id=?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Product not found' });
+  const newQty = (p.quantity || 0) + change;
+  if (newQty < 0) return res.status(400).json({ error: 'Not enough stock for this adjustment' });
+  db.prepare("UPDATE products SET quantity=?, updated_at=datetime('now') WHERE id=?").run(newQty, p.id);
+  db.prepare('INSERT INTO product_stock_movements (product_id, change_qty, reason, reference) VALUES (?,?,?,?)')
+    .run(p.id, change, reason || 'manual adjustment', '');
+  res.json({ success: true, quantity: newQty });
+});
+
+app.get('/api/products/:id/movements', (req, res) => {
+  const rows = db.prepare('SELECT * FROM product_stock_movements WHERE product_id=? ORDER BY created_at DESC LIMIT 100').all(req.params.id);
+  res.json(rows);
 });
 
 app.patch('/api/products/:id/flags', (req, res) => {
@@ -1575,6 +1607,59 @@ app.post('/api/crm/customers/:id/invoices', (req, res) => {
   const r = db.prepare('INSERT INTO proforma_invoices (customer_id, filename, items, freight, pf, remarks, total) VALUES (?,?,?,?,?,?,?)')
     .run(cid, filename, JSON.stringify(items), totalFreight, totalPF, remarks || '', total);
   res.json({ success: true, id: r.lastInsertRowid, filename });
+});
+
+// Diagram 1's Paid/Dispatch checklist. Dispatch — not paid — drives the stock
+// deduction: payment confirms money moved, dispatch confirms material left the
+// factory, and tying the deduction to dispatch keeps on-hand qty accurate even
+// when there's a gap between the two. Idempotent: only fires the deduction on
+// the transition into dispatched (dispatched_at was previously unset).
+app.patch('/api/crm/invoices/:id/status', (req, res) => {
+  const inv = db.prepare('SELECT * FROM proforma_invoices WHERE id=?').get(req.params.id);
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+  const { paid, dispatched } = req.body;
+
+  if (paid !== undefined) {
+    db.prepare("UPDATE proforma_invoices SET paid_at=? WHERE id=?").run(paid ? new Date().toISOString() : null, inv.id);
+  }
+
+  if (dispatched !== undefined) {
+    const wasDispatched = !!inv.dispatched_at;
+    if (dispatched && !wasDispatched) {
+      const items = JSON.parse(inv.items || '[]');
+      const findBySku = db.prepare('SELECT id, quantity FROM products WHERE sku=?');
+      const updateQty = db.prepare("UPDATE products SET quantity=?, updated_at=datetime('now') WHERE id=?");
+      const logMovement = db.prepare('INSERT INTO product_stock_movements (product_id, change_qty, reason, reference) VALUES (?,?,?,?)');
+      for (const it of items) {
+        const sku = (it.sku || '').trim();
+        const qty = parseFloat(it.qty) || 0;
+        if (!sku || !qty) continue;
+        const product = findBySku.get(sku);
+        if (!product) continue;
+        updateQty.run((product.quantity || 0) - qty, product.id);
+        logMovement.run(product.id, -qty, 'PI dispatch', inv.filename);
+      }
+      db.prepare("UPDATE proforma_invoices SET dispatched_at=? WHERE id=?").run(new Date().toISOString(), inv.id);
+    } else if (!dispatched && wasDispatched) {
+      // Un-dispatching reverses the deduction — corrects a mis-click without a manual stock fix.
+      const items = JSON.parse(inv.items || '[]');
+      const findBySku = db.prepare('SELECT id, quantity FROM products WHERE sku=?');
+      const updateQty = db.prepare("UPDATE products SET quantity=?, updated_at=datetime('now') WHERE id=?");
+      const logMovement = db.prepare('INSERT INTO product_stock_movements (product_id, change_qty, reason, reference) VALUES (?,?,?,?)');
+      for (const it of items) {
+        const sku = (it.sku || '').trim();
+        const qty = parseFloat(it.qty) || 0;
+        if (!sku || !qty) continue;
+        const product = findBySku.get(sku);
+        if (!product) continue;
+        updateQty.run((product.quantity || 0) + qty, product.id);
+        logMovement.run(product.id, qty, 'PI dispatch reversed', inv.filename);
+      }
+      db.prepare("UPDATE proforma_invoices SET dispatched_at=? WHERE id=?").run(null, inv.id);
+    }
+  }
+
+  res.json({ success: true, invoice: db.prepare('SELECT * FROM proforma_invoices WHERE id=?').get(inv.id) });
 });
 
 app.delete('/api/crm/invoices/:id', (req, res) => {

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<script>(function(){try{var a=JSON.parse(sessionStorage.getItem("arambhika_auth")||"null");if(!a||!a.role){location.replace("login.html");return;}window.__AUTH=a;}catch(e){location.replace("login.html");}})();</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inventory — Arambhika Enablers</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<style>
+.main { margin-left: 0; padding-top: var(--nav-h); flex:1; display:flex; flex-direction:column; min-height:100vh; }
+.topbar { background:var(--surface); border-bottom:1px solid var(--border); padding:14px 28px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:50; }
+.topbar h2 { font-size:18px; font-weight:700; }
+.content { padding:24px 28px; flex:1; }
+
+.toolbar { display:flex; align-items:center; gap:10px; margin-bottom:20px; flex-wrap:wrap; }
+.search-bar { background:#fff; border:1px solid var(--border); border-radius:8px; padding:8px 14px; font-size:13px; font-family:inherit; width:240px; outline:none; }
+.search-bar:focus { border-color:#6366f1; }
+.count-badge { font-size:12px; color:var(--muted); }
+
+.btn { padding:8px 16px; border-radius:8px; font-size:13px; font-weight:600; font-family:inherit; cursor:pointer; border:none; display:inline-flex; align-items:center; gap:6px; background:var(--surface); color:var(--text); border:1px solid var(--border); }
+.btn-primary { background:#6366f1; color:#fff; border:none; }
+.btn-primary:hover { background:#4f46e5; }
+.btn:hover { border-color:#6366f1; color:#6366f1; }
+.btn-sm { padding:5px 10px; font-size:12px; }
+
+.cat-block { margin-bottom:24px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:#fff; }
+.cat-head { display:flex; align-items:center; gap:10px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); cursor:pointer; user-select:none; }
+.cat-head:hover { background:#eef2ff; }
+.cat-name { font-size:13px; font-weight:700; flex:1; color:var(--text); }
+.cat-count { font-size:11px; color:var(--muted); }
+.cat-chevron { font-size:11px; color:var(--muted); transition:transform .2s; }
+.cat-block.collapsed .cat-chevron { transform:rotate(-90deg); }
+.cat-block.collapsed .cat-body { display:none; }
+.cat-body { overflow-x:auto; }
+
+table { width:100%; border-collapse:collapse; }
+thead th { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; padding:8px 12px; text-align:left; border-bottom:1px solid var(--border); background:var(--surface); }
+tbody tr { border-bottom:1px solid #f1f5f9; }
+tbody tr:last-child { border-bottom:none; }
+tbody tr:hover { background:#f8fafc; }
+td { padding:10px 12px; font-size:13px; color:var(--text); }
+td.muted { color:var(--muted); font-size:12px; }
+
+.badge { display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge.ok { background:#e8f8ee; color:#12703b; }
+.badge.out { background:#fdeaea; color:#a3221f; }
+
+.adjust-controls { display:flex; gap:6px; align-items:center; }
+.delta-input { width:70px; border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:12px; font-family:inherit; outline:none; }
+.reason-select { border:1px solid var(--border); border-radius:6px; padding:5px 6px; font-size:12px; font-family:inherit; outline:none; }
+
+.status-text { font-size:12px; margin-left:8px; }
+.status-text.success { color:#12703b; }
+.status-text.error { color:#a3221f; }
+
+.empty { text-align:center; padding:48px; color:var(--muted); font-size:14px; }
+.toast { position:fixed; bottom:24px; right:24px; background:#1e293b; color:#fff; padding:10px 18px; border-radius:10px; font-size:13px; font-weight:500; z-index:999; opacity:0; transition:opacity .25s; pointer-events:none; }
+.toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-logo"><h1>Arambhika</h1><p>Enablers Dashboard</p></div>
+  <nav class="sidebar-nav">
+    <a href="admin.html?v=summary" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>Summary</a>
+    <a href="crm.html" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>CRM</a>
+    <a href="products.html" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>Products</a>
+    <a href="inventory.html" class="nav-link active"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>Inventory</a>
+    <a href="admin.html?v=admin" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Admin</a>
+  </nav>
+</aside>
+<div class="sidebar-overlay" id="sbOverlay" onclick="document.querySelector(&quot;.sidebar&quot;).classList.remove(&quot;open&quot;);this.classList.remove(&quot;show&quot;)"></div>
+
+<div class="main">
+  <div class="topbar">
+    <h2>Inventory</h2>
+    <div class="toolbar" style="margin:0">
+      <input type="text" class="search-bar" id="searchBox" placeholder="Search by SKU, name or category..." oninput="renderProducts()">
+      <span class="count-badge" id="productCount"></span>
+      <button class="btn btn-outline btn-sm" onclick="sessionStorage.removeItem(&quot;arambhika_auth&quot;);location.replace(&quot;login.html&quot;);" title="Sign out">&#9211; Logout</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div id="productsContainer"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const ADJUST_REASONS = ["Stock received", "Correction", "Damaged / Lost", "Manual dispatch", "Other"];
+const collapsedCats = {};
+let allProducts = [];
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function loadProducts() {
+  const res = await fetch('/api/products');
+  const body = await res.json();
+  allProducts = body.data || [];
+  renderProducts();
+}
+
+function stockStatus(p) {
+  if ((p.quantity || 0) <= 0) return { label: 'Out of stock', cls: 'out' };
+  return { label: 'In stock', cls: 'ok' };
+}
+
+function groupByCategory(products) {
+  const order = [];
+  const map = {};
+  for (const p of products) {
+    const cat = p.category || '(uncategorized)';
+    if (!map[cat]) { map[cat] = []; order.push(cat); }
+    map[cat].push(p);
+  }
+  return { order, map };
+}
+
+function productRowHtml(p) {
+  const status = stockStatus(p);
+  const reasonOptions = ADJUST_REASONS.map(r => `<option value="${esc(r)}" ${r === 'Stock received' ? 'selected' : ''}>${esc(r)}</option>`).join('');
+  return `
+    <tr>
+      <td>${esc(p.sku)}</td>
+      <td>${esc(p.name)}</td>
+      <td>${p.quantity ?? 0}</td>
+      <td><span class="badge ${status.cls}">${status.label}</span></td>
+      <td>
+        <div class="adjust-controls">
+          <input type="number" class="delta-input" data-id="${p.id}" step="any" placeholder="+/- qty">
+          <select class="reason-select" data-id="${p.id}">${reasonOptions}</select>
+          <button class="btn btn-sm" onclick="saveInlineAdjust(${p.id})">Save</button>
+        </div>
+        <span class="status-text row-status" data-id="${p.id}"></span>
+      </td>
+    </tr>
+  `;
+}
+
+function renderProducts() {
+  const q = document.getElementById('searchBox').value.trim().toLowerCase();
+  const filtered = allProducts.filter(p =>
+    !q || (p.sku||'').toLowerCase().includes(q) || (p.name||'').toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q)
+  );
+
+  const container = document.getElementById('productsContainer');
+  const { order, map } = groupByCategory(filtered);
+
+  let html = '';
+  for (const cat of order) {
+    const items = map[cat];
+    const collapsed = collapsedCats[cat] ? ' collapsed' : '';
+    html += `<div class="cat-block${collapsed}">`;
+    html += `<div class="cat-head" onclick="toggleCat('${cat.replace(/'/g,"\\'")}')">`;
+    html += `<span class="cat-name">${esc(cat)}</span>`;
+    html += `<span class="cat-count">${items.length} product${items.length===1?'':'s'}</span>`;
+    html += `<span class="cat-chevron">&#9660;</span></div>`;
+    html += `<div class="cat-body"><table><thead><tr><th>SKU</th><th>Name</th><th>In Stock</th><th>Status</th><th>Adjust stock</th></tr></thead><tbody>`;
+    html += items.map(productRowHtml).join('');
+    html += `</tbody></table></div></div>`;
+  }
+  container.innerHTML = html || '<div class="empty">No products found.</div>';
+  document.getElementById('productCount').textContent = `${filtered.length} of ${allProducts.length} products`;
+}
+
+function toggleCat(cat) {
+  collapsedCats[cat] = !collapsedCats[cat];
+  renderProducts();
+}
+
+async function saveInlineAdjust(productId) {
+  const deltaInput = document.querySelector(`.delta-input[data-id="${productId}"]`);
+  const reasonSelect = document.querySelector(`.reason-select[data-id="${productId}"]`);
+  const statusEl = document.querySelector(`.row-status[data-id="${productId}"]`);
+  const delta = parseFloat(deltaInput.value);
+  if (Number.isNaN(delta) || delta === 0) {
+    statusEl.textContent = 'Enter a non-zero number.'; statusEl.className = 'status-text error row-status'; return;
+  }
+  try {
+    const res = await fetch(`/api/products/${productId}/adjust-stock`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ delta, reason: reasonSelect.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) { statusEl.textContent = data.error || 'Failed.'; statusEl.className = 'status-text error row-status'; return; }
+    toast('Stock updated');
+    await loadProducts();
+  } catch(e) { statusEl.textContent = 'Failed to update stock.'; statusEl.className = 'status-text error row-status'; }
+}
+
+function toast(msg, type='') {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = type ? `show ${type}` : 'show';
+  setTimeout(() => el.className = '', 2500);
+}
+
+loadProducts();
+</script>
+<script src="js/nav.js"></script>
+</body>
+</html>

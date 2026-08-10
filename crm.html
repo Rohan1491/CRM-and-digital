@@ -382,6 +382,7 @@
     <a href="admin.html?v=summary" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>Summary</a>
     <a href="crm.html" class="nav-link active"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>CRM</a>
     <a href="products.html" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>Products</a>
+    <a href="inventory.html" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>Inventory</a>
     <a href="admin.html?v=admin" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Admin</a>
   </nav>
   <div style="padding:12px;border-top:1px solid var(--border);margin-top:auto">
@@ -1932,11 +1933,26 @@ async function loadPIList(cid) {
         <span style="font-size:13px;font-weight:600;flex:1">${esc(inv.filename)}</span>
         <span style="font-size:11px;color:var(--muted)">${d}</span>
         <span style="font-size:11px;font-weight:700;color:var(--primary)">₹${parseFloat(inv.total).toLocaleString('en-IN',{minimumFractionDigits:2})}</span>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer"><input type="checkbox" ${inv.paid_at?'checked':''} onchange="setPIStatus(${inv.id},{paid:this.checked},${cid})">Paid</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer"><input type="checkbox" ${inv.dispatched_at?'checked':''} onchange="setPIStatus(${inv.id},{dispatched:this.checked},${cid})">Dispatched</label>
         <a href="/api/crm/invoices/${inv.id}/pdf" target="_blank" class="btn btn-outline btn-sm" style="font-size:10px;padding:3px 8px">Download</a>
         <button style="border:none;background:none;color:var(--muted);cursor:pointer;font-size:14px" onclick="deletePIInvoice(${cid},${inv.id})" title="Delete">✕</button>
       </div>`;
     }).join('');
   } catch(e) { el.innerHTML = '<span style="color:var(--danger);font-size:12px">Could not load invoices</span>'; }
+}
+
+async function setPIStatus(invId, patch, cid) {
+  try {
+    const r = await fetch(`/api/crm/invoices/${invId}/status`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(patch),
+    });
+    if (!r.ok) { const d = await r.json(); toast(d.error || 'Failed to update status', 'error'); }
+    if (patch.dispatched !== undefined) toast(patch.dispatched ? 'Dispatched — stock deducted' : 'Un-dispatched — stock restored', 'success');
+  } catch(e) { toast('Failed to update status', 'error'); }
+  loadPIList(cid);
 }
 
 function openPIForm(cid) {
