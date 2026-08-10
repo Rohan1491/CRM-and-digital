@@ -129,6 +129,26 @@ db.exec(`
     author TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS customer_socials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    handle TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS instagram_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER DEFAULT NULL,
+    external_id TEXT NOT NULL,
+    handle TEXT DEFAULT '',
+    direction TEXT NOT NULL,
+    kind TEXT DEFAULT 'dm',
+    body TEXT DEFAULT '',
+    ig_msg_id TEXT DEFAULT '',
+    author TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ── Idempotent schema migrations ─────────────────────────────
@@ -158,6 +178,9 @@ try { db.exec("CREATE INDEX IF NOT EXISTS idx_wa_phone ON wa_messages(phone)"); 
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_wa_customer ON wa_messages(customer_id)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_phones_customer ON customer_phones(customer_id)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_notif_read ON notifications(is_read)"); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_socials_external ON customer_socials(platform, external_id)"); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_ig_external ON instagram_messages(external_id)"); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_ig_customer ON instagram_messages(customer_id)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_status ON customers_v2(status)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_type ON customers_v2(customer_type)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_state ON customers_v2(state)"); } catch(e) {}
@@ -1351,6 +1374,102 @@ app.post('/api/whatsapp/webhook', async (req, res) => {
     res.sendStatus(200);
   } catch(e) {
     console.log('WA webhook error:', e.message);
+    res.sendStatus(200); // always 200 so Meta doesn't retry-storm
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// Instagram inbound (DMs + comments) — same shape as the WhatsApp
+// webhook above: resolve contact, auto-create a Lead if unknown, log
+// the message, raise a notification. No auto-reply — WhatsApp doesn't
+// have one either yet, so this stays consistent with what's actually
+// live rather than the aspirational "Claude auto-reply" in the plan.
+// ══════════════════════════════════════════════════════════════════
+const IG_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
+const IG_USER_ID = process.env.INSTAGRAM_USER_ID;
+const IG_VERIFY_TOKEN = process.env.INSTAGRAM_VERIFY_TOKEN;
+const IG_API = 'https://graph.instagram.com/v21.0'; // Instagram Login product, not graph.facebook.com
+
+function findCustomerByInstagram(externalId) {
+  if (!externalId) return null;
+  const row = db.prepare(
+    "SELECT c.id, c.name FROM customer_socials cs JOIN customers_v2 c ON c.id=cs.customer_id WHERE cs.platform='instagram' AND cs.external_id=? LIMIT 1"
+  ).get(String(externalId));
+  return row || null;
+}
+
+function findOrCreateCustomerByInstagram(externalId, handle) {
+  let cust = findCustomerByInstagram(externalId);
+  if (cust) return cust;
+  const now = new Date();
+  const autoName = handle
+    ? '@' + handle
+    : 'IG-' + now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) + '-' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }).replace(':', '');
+  const r = db.prepare("INSERT INTO customers_v2 (name,company,phone,status,source,customer_type,country) VALUES (?,?,?,?,?,?,?)")
+    .run(autoName, '', '', 'Lead', 'Instagram Inbound', 'Others', '');
+  db.prepare("INSERT INTO customer_socials (customer_id, platform, external_id, handle) VALUES (?,?,?,?)")
+    .run(r.lastInsertRowid, 'instagram', String(externalId), handle || '');
+  return { id: r.lastInsertRowid, name: autoName };
+}
+
+// Best-effort — Instagram only returns profile info for users who've messaged the account
+async function igFetchUsername(externalId) {
+  try {
+    const r = await fetch(`${IG_API}/${externalId}?fields=username&access_token=${IG_TOKEN}`);
+    const j = await r.json();
+    return j.username || null;
+  } catch (e) { return null; }
+}
+
+app.get('/api/instagram/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === IG_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  res.sendStatus(403);
+});
+
+app.post('/api/instagram/webhook', async (req, res) => {
+  try {
+    const entries = req.body.entry || [];
+    for (const entry of entries) {
+      // DMs arrive as entry.messaging, same shape as Messenger
+      for (const m of (entry.messaging || [])) {
+        const senderId = m.sender?.id;
+        if (!senderId || senderId === IG_USER_ID) continue; // skip echoes of our own sent messages
+        const body = m.message?.text || (m.message?.attachments ? `[${m.message.attachments[0]?.type || 'attachment'}]` : '[unsupported]');
+        const handle = await igFetchUsername(senderId);
+        const cust = findOrCreateCustomerByInstagram(senderId, handle);
+        db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author) VALUES (?,?,?,?,?,?,?,?)')
+          .run(cust.id, senderId, handle || '', 'in', 'dm', body, m.message?.mid || '', '');
+        try {
+          const notifBody = `${cust.name} (IG DM): ${body}`.slice(0, 200);
+          db.prepare('INSERT INTO notifications (customer_id, type, body) VALUES (?,?,?)').run(cust.id, 'ig_message', notifBody);
+        } catch (e) {}
+      }
+
+      // Comments arrive as entry.changes with field "comments"
+      for (const change of (entry.changes || [])) {
+        if (change.field !== 'comments') continue;
+        const value = change.value || {};
+        const senderId = value.from?.id;
+        if (!senderId || senderId === IG_USER_ID) continue;
+        const handle = value.from?.username || null;
+        const body = value.text || '';
+        const cust = findOrCreateCustomerByInstagram(senderId, handle);
+        db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author) VALUES (?,?,?,?,?,?,?,?)')
+          .run(cust.id, senderId, handle || '', 'in', 'comment', body, value.id || '', '');
+        try {
+          const notifBody = `${cust.name} (IG comment): ${body}`.slice(0, 200);
+          db.prepare('INSERT INTO notifications (customer_id, type, body) VALUES (?,?,?)').run(cust.id, 'ig_message', notifBody);
+        } catch (e) {}
+      }
+    }
+    res.sendStatus(200);
+  } catch (e) {
+    console.log('IG webhook error:', e.message);
     res.sendStatus(200); // always 200 so Meta doesn't retry-storm
   }
 });
