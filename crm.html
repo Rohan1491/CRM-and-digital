@@ -619,6 +619,29 @@ let scope = 'all';
 let sideFilter = { type:null, status:null, state:null };
 let selCust = null, selId = null, tabFilter = 'All', qnActiveCid = null, fuActiveCid = null;
 let allProducts = [], pickerOpen = false, pickerOpenCid = null;
+
+// Same fixed category order as the Products / Inventory pages, so the PI
+// item picker lists products in the same order they're browsed elsewhere.
+const CATEGORY_ORDER = [
+  'Nickel Strip Plated',
+  'Nickel Strip Pure',
+  'Nickel Strip Pure Custom',
+  'Copper Busbar',
+  'Cell LFP',
+  'Cell Li-ion',
+  'Cell Prismatic',
+  'Aluminium Busbar',
+];
+function sortByCategoryOrder(products) {
+  return [...products].sort((a, b) => {
+    const ra = CATEGORY_ORDER.indexOf(a.category), rb = CATEGORY_ORDER.indexOf(b.category);
+    const rankA = ra === -1 ? CATEGORY_ORDER.length : ra;
+    const rankB = rb === -1 ? CATEGORY_ORDER.length : rb;
+    if (rankA !== rankB) return rankA - rankB;
+    if (a.category !== b.category) return (a.category||'').localeCompare(b.category||'');
+    return (a.name||'').localeCompare(b.name||'');
+  });
+}
 let allWaTemplates = [];
 let custTotal = 0, custLoading = false;
 let _serverStats = null;
@@ -701,7 +724,7 @@ async function init() {
   teamMembers = (await tmR.json()).data || [];
   allStatuses = (await stR.json()).data || [];
   allTypes = (await ctR.json()).data || [];
-  allProducts = (await prR.json()).data || [];
+  allProducts = sortByCategoryOrder((await prR.json()).data || []);
   renderTiles(); renderFilterSidebar();
   await loadList();
   loadNotifications();
@@ -785,6 +808,15 @@ function renderTiles() {
   const sCount = (key) => ss ? (ss.byStatus[key]||0) : allCust.filter(c=>c.status===key).length;
   const overdue = ss ? (ss.overdue||0) : allCust.filter(c=>c.next_followup&&c.next_followup<t).length;
   const total = ss ? (ss.total||0) : (custTotal||allCust.length);
+  const rev = (ss && ss.revenue) ? ss.revenue : { paid: 0, pending: 0 };
+  const revTotal = (rev.paid||0) + (rev.pending||0);
+  const fmtRev = v => '₹' + (v||0).toLocaleString('en-IN');
+  const revTile =
+    `<div class="tm-tile">
+       <div class="tm-tile-label">💰 Revenue</div>
+       <div class="tm-tile-val" style="font-size:16px">${fmtRev(revTotal)}</div>
+       <div class="tm-tile-sub"><span style="color:#15803d">${fmtRev(rev.paid)} paid</span> · <span style="color:#c2410c">${fmtRev(rev.pending)} pending</span></div>
+     </div>`;
   el.innerHTML =
     `<div class="tm-tile${!sideFilter.status?' active':''}" onclick="filterByStatus(null)" style="border-color:#6366f1;background:#eef2ff">
        <div class="tm-tile-label">Total Contacts</div>
@@ -794,7 +826,11 @@ function renderTiles() {
     mk('Lead','🆕 Leads', sCount('Lead'), '') +
     mk('Contacted and Has Potential','📞 Contacted & Has Potential', sCount('Contacted and Has Potential'), '') +
     mk('Contacted but No Response','🔇 No Response', sCount('Contacted but No Response'), '') +
-    mk('Onboarded','✅ Onboarded', sCount('Onboarded'), '');
+    mk('Onboarded','✅ Onboarded', sCount('Onboarded'), '') +
+    revTile;
+}
+function refreshRevenueStats() {
+  fetch('/api/dashboard/stats').then(r=>r.json()).then(st=>{_serverStats=st;renderTiles();}).catch(()=>{});
 }
 function filterByStatus(val) {
   sideFilter.status = val;
@@ -1953,6 +1989,7 @@ async function setPIStatus(invId, patch, cid) {
     if (patch.dispatched !== undefined) toast(patch.dispatched ? 'Dispatched — stock deducted' : 'Un-dispatched — stock restored', 'success');
   } catch(e) { toast('Failed to update status', 'error'); }
   loadPIList(cid);
+  refreshRevenueStats();
 }
 
 function openPIForm(cid) {
@@ -2052,6 +2089,7 @@ async function savePIForm(cid) {
     toast('Proforma Invoice created!', 'success');
     document.getElementById('piForm-' + cid).style.display = 'none';
     loadPIList(cid);
+    refreshRevenueStats();
     window.open(`/api/crm/invoices/${d.id}/pdf`, '_blank');
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
@@ -2068,6 +2106,7 @@ async function deletePIInvoice(cid, invId) {
     if (!r.ok) { toast(d.error || 'Delete failed', 'error'); return; }
     toast('Invoice deleted', 'success');
     loadPIList(cid);
+    refreshRevenueStats();
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 

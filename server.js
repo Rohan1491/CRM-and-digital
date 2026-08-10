@@ -11,7 +11,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Database ───────────────────────────────────────────────────
-const db = new Database(path.join(__dirname, 'shopmanager.db'));
+// DB_PATH lets local dev point the db outside OneDrive-synced folders —
+// background sync can lock/truncate a SQLite file mid-write (see the
+// arambhika-inventory app's README for the incident that documented this).
+const dbPath = process.env.DB_PATH || path.join(__dirname, 'shopmanager.db');
+const db = new Database(dbPath);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS customers_v2 (
@@ -161,7 +165,12 @@ try { db.exec("ALTER TABLE customers_v2 ADD COLUMN customer_type TEXT DEFAULT ''
 try { db.exec("ALTER TABLE customers_v2 ADD COLUMN phone2 TEXT DEFAULT ''"); } catch(e) {}
 try { db.exec("ALTER TABLE customers_v2 ADD COLUMN country TEXT DEFAULT ''"); } catch(e) {}
 try { db.exec("ALTER TABLE products ADD COLUMN flag_out_of_stock INTEGER DEFAULT 0"); } catch(e) {}
-try { db.exec("ALTER TABLE products ADD COLUMN flag_for_internal INTEGER DEFAULT 0"); } catch(e) {}
+// Diagram 1: flag_for_internal renamed to flag_for_website — user-set for
+// products not tracked in inventory ("On Request", per the diagram). Rename
+// first (preserves data on dbs that still have the old column), then the
+// ADD COLUMN is a no-op there and only fires on genuinely fresh databases.
+try { db.exec("ALTER TABLE products RENAME COLUMN flag_for_internal TO flag_for_website"); } catch(e) {}
+try { db.exec("ALTER TABLE products ADD COLUMN flag_for_website INTEGER DEFAULT 0"); } catch(e) {}
 try { db.exec("ALTER TABLE team_members ADD COLUMN password TEXT DEFAULT ''"); } catch(e) {}
 try { db.exec("ALTER TABLE products ADD COLUMN quantity REAL DEFAULT 0"); } catch(e) {}
 try { db.exec(`CREATE TABLE IF NOT EXISTS product_stock_movements (
@@ -210,6 +219,13 @@ try {
     if (!exists.get(r.id, r.phone)) ins.run(r.id, r.phone, 'Primary');
   }
 } catch(e) { console.log('Phone backfill note:', e.message); }
+
+// Backfill: recompute flag_available/flag_out_of_stock for rows inserted
+// before this logic existed — cheap given catalog size, safe to run every boot.
+try {
+  const ids = db.prepare('SELECT id FROM products').all();
+  for (const r of ids) syncAvailabilityFlags(r.id);
+} catch(e) { console.log('Availability flag backfill note:', e.message); }
 
 // ── Idempotent data migrations ────────────────────────────────
 try {
@@ -783,17 +799,35 @@ app.get('/api/products/:id', (req, res) => {
   res.json(p);
 });
 
+// Available / Out of Stock are read from inventory, not set by hand: they're
+// a pure function of quantity, except for flag_for_website products (not
+// inventory-tracked at all — "On Request" instead, so neither flag applies).
+function syncAvailabilityFlags(productId) {
+  const p = db.prepare('SELECT quantity, flag_for_website FROM products WHERE id=?').get(productId);
+  if (!p) return;
+  const available = !p.flag_for_website && (p.quantity || 0) > 0;
+  const outOfStock = !p.flag_for_website && (p.quantity || 0) <= 0;
+  db.prepare('UPDATE products SET flag_available=?, flag_out_of_stock=? WHERE id=?')
+    .run(available ? 1 : 0, outOfStock ? 1 : 0, productId);
+}
+
 app.post('/api/products', (req, res) => {
   const p = req.body;
-  const r = db.prepare(`INSERT INTO products (sku,category,name,price,new_price,availability,unit,min_quantity,dimensions,details,specs,applications,images,flag_available,flag_out_of_stock,flag_for_internal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(p.sku, p.category, p.name, p.price, p.new_price || '', p.availability || 'yes', p.unit, p.min_quantity || 1, p.dimensions || '', p.details || '', JSON.stringify(p.specs || {}), p.applications || '', '[]', p.flag_available?1:0, p.flag_out_of_stock?1:0, p.flag_for_internal?1:0);
+  // New products aren't in inventory until someone explicitly adds them there
+  // (client confirmation workflow) -- default flag_for_website to 1 unless the
+  // caller says otherwise.
+  const flagForWebsite = p.flag_for_website === undefined ? 1 : (p.flag_for_website ? 1 : 0);
+  const r = db.prepare(`INSERT INTO products (sku,category,name,price,new_price,availability,unit,min_quantity,dimensions,details,specs,applications,images,flag_for_website) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(p.sku, p.category, p.name, p.price, p.new_price || '', p.availability || 'yes', p.unit, p.min_quantity || 1, p.dimensions || '', p.details || '', JSON.stringify(p.specs || {}), p.applications || '', '[]', flagForWebsite);
+  syncAvailabilityFlags(r.lastInsertRowid);
   res.json({ success: true, id: r.lastInsertRowid });
 });
 
 app.put('/api/products/:id', (req, res) => {
   const p = req.body;
-  db.prepare(`UPDATE products SET sku=?,category=?,name=?,price=?,new_price=?,availability=?,unit=?,min_quantity=?,dimensions=?,details=?,specs=?,applications=?,flag_available=?,flag_out_of_stock=?,flag_for_internal=?,updated_at=datetime('now') WHERE id=?`)
-    .run(p.sku, p.category, p.name, p.price, p.new_price || '', p.availability, p.unit, p.min_quantity, p.dimensions || '', p.details || '', JSON.stringify(p.specs || {}), p.applications || '', p.flag_available?1:0, p.flag_out_of_stock?1:0, p.flag_for_internal?1:0, req.params.id);
+  db.prepare(`UPDATE products SET sku=?,category=?,name=?,price=?,new_price=?,availability=?,unit=?,min_quantity=?,dimensions=?,details=?,specs=?,applications=?,flag_for_website=?,updated_at=datetime('now') WHERE id=?`)
+    .run(p.sku, p.category, p.name, p.price, p.new_price || '', p.availability, p.unit, p.min_quantity, p.dimensions || '', p.details || '', JSON.stringify(p.specs || {}), p.applications || '', p.flag_for_website?1:0, req.params.id);
+  syncAvailabilityFlags(req.params.id);
   res.json({ success: true });
 });
 
@@ -809,6 +843,7 @@ app.post('/api/products/:id/adjust-stock', (req, res) => {
   db.prepare("UPDATE products SET quantity=?, updated_at=datetime('now') WHERE id=?").run(newQty, p.id);
   db.prepare('INSERT INTO product_stock_movements (product_id, change_qty, reason, reference) VALUES (?,?,?,?)')
     .run(p.id, change, reason || 'manual adjustment', '');
+  syncAvailabilityFlags(p.id);
   res.json({ success: true, quantity: newQty });
 });
 
@@ -818,9 +853,10 @@ app.get('/api/products/:id/movements', (req, res) => {
 });
 
 app.patch('/api/products/:id/flags', (req, res) => {
-  const { flag_available, flag_out_of_stock, flag_for_internal } = req.body;
-  db.prepare(`UPDATE products SET flag_available=?,flag_out_of_stock=?,flag_for_internal=?,updated_at=datetime('now') WHERE id=?`)
-    .run(flag_available?1:0, flag_out_of_stock?1:0, flag_for_internal?1:0, req.params.id);
+  const { flag_for_website } = req.body;
+  db.prepare(`UPDATE products SET flag_for_website=?, updated_at=datetime('now') WHERE id=?`)
+    .run(flag_for_website?1:0, req.params.id);
+  syncAvailabilityFlags(req.params.id);
   res.json({ success: true });
 });
 
@@ -961,7 +997,10 @@ app.get('/api/dashboard/stats', (req, res) => {
   const recentActivity = db.prepare(`SELECT d.id,d.note,d.author,d.type,d.created_at,c.name as customer_name,c.assigned_to FROM discussions d JOIN customers_v2 c ON c.id=d.customer_id ORDER BY d.created_at DESC LIMIT 12`).all();
   const todayFollowups = db.prepare(`SELECT id,name,company,phone,assigned_to,status,next_followup,requirement FROM customers_v2 WHERE next_followup=? ORDER BY assigned_to`).all(today);
   const overdueList = db.prepare(`SELECT id,name,company,phone,assigned_to,status,next_followup FROM customers_v2 WHERE next_followup<? AND next_followup!='' ORDER BY next_followup LIMIT 20`).all(today);
-  res.json({ total: customers.length, byAssignee, byStatus, overdue, dueToday, recentActivity, todayFollowups, overdueList });
+  const revPaid = db.prepare(`SELECT COALESCE(SUM(total),0) v FROM proforma_invoices WHERE paid_at IS NOT NULL`).get().v;
+  const revPending = db.prepare(`SELECT COALESCE(SUM(total),0) v FROM proforma_invoices WHERE paid_at IS NULL`).get().v;
+  const revenue = { paid: revPaid, pending: revPending };
+  res.json({ total: customers.length, byAssignee, byStatus, overdue, dueToday, recentActivity, todayFollowups, overdueList, revenue });
 });
 
 // ── Download CSV ──────────────────────────────────────────────
@@ -1638,6 +1677,7 @@ app.patch('/api/crm/invoices/:id/status', (req, res) => {
         if (!product) continue;
         updateQty.run((product.quantity || 0) - qty, product.id);
         logMovement.run(product.id, -qty, 'PI dispatch', inv.filename);
+        syncAvailabilityFlags(product.id);
       }
       db.prepare("UPDATE proforma_invoices SET dispatched_at=? WHERE id=?").run(new Date().toISOString(), inv.id);
     } else if (!dispatched && wasDispatched) {
@@ -1654,6 +1694,7 @@ app.patch('/api/crm/invoices/:id/status', (req, res) => {
         if (!product) continue;
         updateQty.run((product.quantity || 0) + qty, product.id);
         logMovement.run(product.id, qty, 'PI dispatch reversed', inv.filename);
+        syncAvailabilityFlags(product.id);
       }
       db.prepare("UPDATE proforma_invoices SET dispatched_at=? WHERE id=?").run(null, inv.id);
     }

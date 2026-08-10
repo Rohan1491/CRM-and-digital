@@ -57,6 +57,19 @@ td.muted { color:var(--muted); font-size:12px; }
 .empty { text-align:center; padding:48px; color:var(--muted); font-size:14px; }
 .toast { position:fixed; bottom:24px; right:24px; background:#1e293b; color:#fff; padding:10px 18px; border-radius:10px; font-size:13px; font-weight:500; z-index:999; opacity:0; transition:opacity .25s; pointer-events:none; }
 .toast.show { opacity:1; }
+
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal { background:#fff; border-radius:12px; width:560px; max-height:80vh; display:flex; flex-direction:column; overflow:hidden; }
+.modal-head { padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.modal-head h3 { font-size:15px; font-weight:700; }
+.modal-close { background:none; border:none; font-size:20px; cursor:pointer; color:var(--muted); line-height:1; }
+.modal-body { padding:14px 20px; overflow-y:auto; }
+.pick-search { width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-size:13px; font-family:inherit; outline:none; margin-bottom:12px; }
+.pick-row { display:flex; align-items:center; gap:10px; padding:8px 4px; border-bottom:1px solid #f1f5f9; }
+.pick-row:last-child { border-bottom:none; }
+.pick-name { flex:1; font-size:13px; }
+.pick-sku { color:var(--muted); font-size:11px; }
 </style>
 </head>
 <body>
@@ -79,12 +92,28 @@ td.muted { color:var(--muted); font-size:12px; }
     <div class="toolbar" style="margin:0">
       <input type="text" class="search-bar" id="searchBox" placeholder="Search by SKU, name or category..." oninput="renderProducts()">
       <span class="count-badge" id="productCount"></span>
+      <button class="btn btn-primary btn-sm" onclick="openAddInventoryModal()">+ Add to Inventory</button>
       <button class="btn btn-outline btn-sm" onclick="sessionStorage.removeItem(&quot;arambhika_auth&quot;);location.replace(&quot;login.html&quot;);" title="Sign out">&#9211; Logout</button>
     </div>
   </div>
 
   <div class="content">
     <div id="productsContainer"></div>
+  </div>
+</div>
+
+<!-- Add to Inventory picker: lists products from the catalog (Products page)
+     not yet inventory-tracked (flag_for_website=1) -->
+<div class="modal-overlay" id="addInvModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Add to Inventory</h3>
+      <button class="modal-close" onclick="closeAddInventoryModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="text" class="pick-search" id="pickSearch" placeholder="Search products not yet in inventory..." oninput="renderPickList()">
+      <div id="pickList"></div>
+    </div>
   </div>
 </div>
 
@@ -109,14 +138,34 @@ function stockStatus(p) {
   return { label: 'In stock', cls: 'ok' };
 }
 
+// Same fixed display order as the standalone inventory app's CATEGORY_ORDER.
+// Unlisted categories sort alphabetically after these, so a new category
+// never silently disappears from the page.
+const CATEGORY_ORDER = [
+  'Nickel Strip Plated',
+  'Nickel Strip Pure',
+  'Nickel Strip Pure Custom',
+  'Copper Busbar',
+  'Cell LFP',
+  'Cell Li-ion',
+  'Cell Prismatic',
+  'Aluminium Busbar',
+];
+
 function groupByCategory(products) {
-  const order = [];
   const map = {};
   for (const p of products) {
     const cat = p.category || '(uncategorized)';
-    if (!map[cat]) { map[cat] = []; order.push(cat); }
+    if (!map[cat]) map[cat] = [];
     map[cat].push(p);
   }
+  const order = Object.keys(map).sort((a, b) => {
+    const ra = CATEGORY_ORDER.indexOf(a), rb = CATEGORY_ORDER.indexOf(b);
+    const rankA = ra === -1 ? CATEGORY_ORDER.length : ra;
+    const rankB = rb === -1 ? CATEGORY_ORDER.length : rb;
+    if (rankA !== rankB) return rankA - rankB;
+    return a.localeCompare(b);
+  });
   return { order, map };
 }
 
@@ -143,7 +192,11 @@ function productRowHtml(p) {
 
 function renderProducts() {
   const q = document.getElementById('searchBox').value.trim().toLowerCase();
-  const filtered = allProducts.filter(p =>
+  // Inventory only shows products actually being stock-tracked — anything
+  // flagged For Website (not yet added / on-request) is excluded, and only
+  // shows up again once "Added to Inventory" below flips that flag.
+  const tracked = allProducts.filter(p => !p.flag_for_website);
+  const filtered = tracked.filter(p =>
     !q || (p.sku||'').toLowerCase().includes(q) || (p.name||'').toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q)
   );
 
@@ -164,7 +217,49 @@ function renderProducts() {
     html += `</tbody></table></div></div>`;
   }
   container.innerHTML = html || '<div class="empty">No products found.</div>';
-  document.getElementById('productCount').textContent = `${filtered.length} of ${allProducts.length} products`;
+  document.getElementById('productCount').textContent = `${filtered.length} of ${tracked.length} products`;
+}
+
+function openAddInventoryModal() {
+  document.getElementById('pickSearch').value = '';
+  document.getElementById('addInvModal').classList.add('open');
+  renderPickList();
+}
+
+function closeAddInventoryModal() {
+  document.getElementById('addInvModal').classList.remove('open');
+}
+
+function renderPickList() {
+  const q = document.getElementById('pickSearch').value.trim().toLowerCase();
+  const candidates = allProducts
+    .filter(p => p.flag_for_website)
+    .filter(p => !q || (p.sku||'').toLowerCase().includes(q) || (p.name||'').toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q));
+
+  const list = document.getElementById('pickList');
+  if (!candidates.length) {
+    list.innerHTML = '<div class="empty">No products found — everything matching is already in inventory.</div>';
+    return;
+  }
+  list.innerHTML = candidates.map(p => `
+    <div class="pick-row">
+      <div class="pick-name">${esc(p.name)}<br><span class="pick-sku">${esc(p.sku)} · ${esc(p.category||'')}</span></div>
+      <button class="btn btn-primary btn-sm" onclick="addToInventory(${p.id})">Add</button>
+    </div>
+  `).join('');
+}
+
+async function addToInventory(productId) {
+  try {
+    const res = await fetch(`/api/products/${productId}/flags`, {
+      method: 'PATCH', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ flag_for_website: 0 }),
+    });
+    if (!res.ok) throw new Error('Failed');
+    await loadProducts();
+    renderPickList();
+    toast('Added to inventory');
+  } catch(e) { toast('Failed to add', 'error'); }
 }
 
 function toggleCat(cat) {
