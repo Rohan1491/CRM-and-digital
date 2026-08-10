@@ -201,6 +201,13 @@ try { db.exec("CREATE INDEX IF NOT EXISTS idx_notif_read ON notifications(is_rea
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_socials_external ON customer_socials(platform, external_id)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_ig_external ON instagram_messages(external_id)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_ig_customer ON instagram_messages(customer_id)"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN ai_intent TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN ai_action TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN ai_confidence TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN ai_reply TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN ai_reasoning TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN reply_status TEXT DEFAULT ''"); } catch(e) {}
+try { db.exec("ALTER TABLE instagram_messages ADD COLUMN replied_at TEXT DEFAULT ''"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_status ON customers_v2(status)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_type ON customers_v2(customer_type)"); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_cv2_state ON customers_v2(state)"); } catch(e) {}
@@ -230,10 +237,10 @@ try {
 // ── Idempotent data migrations ────────────────────────────────
 try {
   db.exec([
-    "UPDATE customers_v2 SET status='Contacted' WHERE status='Chasing'",
+    "UPDATE customers_v2 SET status='Contacted and Has Potential' WHERE status IN ('Chasing','Contacted')",
     "UPDATE customers_v2 SET status='Contacted but No Response' WHERE status='No Response'",
     "UPDATE customers_v2 SET status='Onboarded' WHERE status IN ('Settled','Active')",
-    "UPDATE customers_v2 SET status='Lead' WHERE status NOT IN ('Lead','Contacted','Contacted but No Response','Onboarded')",
+    "UPDATE customers_v2 SET status='Lead' WHERE status NOT IN ('Lead','Contacted and Has Potential','Contacted but No Response','Onboarded')",
     "UPDATE customers_v2 SET assigned_to='Rohan' WHERE LOWER(COALESCE(assigned_to,'')) LIKE '%rohan%'",
     "UPDATE customers_v2 SET assigned_to='Saurabh' WHERE LOWER(COALESCE(assigned_to,'')) LIKE '%saurabh%'",
     "UPDATE customers_v2 SET assigned_to='Unassigned' WHERE assigned_to NOT IN ('Rohan','Saurabh','Unassigned') OR assigned_to IS NULL OR assigned_to=''"
@@ -1456,9 +1463,9 @@ app.post('/api/whatsapp/webhook', async (req, res) => {
 // have one either yet, so this stays consistent with what's actually
 // live rather than the aspirational "Claude auto-reply" in the plan.
 // ══════════════════════════════════════════════════════════════════
-const IG_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
-const IG_USER_ID = process.env.INSTAGRAM_USER_ID;
-const IG_VERIFY_TOKEN = process.env.INSTAGRAM_VERIFY_TOKEN;
+const IG_TOKEN = process.env.IG_ACCESS_TOKEN || process.env.INSTAGRAM_ACCESS_TOKEN;
+const IG_USER_ID = process.env.IG_USER_ID || process.env.INSTAGRAM_USER_ID;
+const IG_VERIFY_TOKEN = process.env.IG_VERIFY_TOKEN || process.env.INSTAGRAM_VERIFY_TOKEN;
 const IG_API = 'https://graph.instagram.com/v21.0'; // Instagram Login product, not graph.facebook.com
 
 function findCustomerByInstagram(externalId) {
@@ -1492,6 +1499,67 @@ async function igFetchUsername(externalId) {
   } catch (e) { return null; }
 }
 
+// Claude decides — same call shape as /api/ai/quick-update, reused for social inbound.
+// Only decides; nothing sends anything yet. "escalate" is still the fallback on any
+// error or low-confidence read, same as an unhandled message today.
+async function decideInstagramAction(cust, body, kind) {
+  try {
+    const c = db.prepare('SELECT status, requirement FROM customers_v2 WHERE id=?').get(cust.id) || {};
+    const discussions = db.prepare("SELECT note FROM discussions WHERE customer_id=? ORDER BY created_at DESC LIMIT 5").all(cust.id);
+    const interests = db.prepare('SELECT interest, quantity FROM customer_interests WHERE customer_id=?').all(cust.id);
+    const products = db.prepare('SELECT id, sku, name, category, price, new_price, unit, min_quantity, details FROM products').all();
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msg = await client.messages.create({
+      model: 'claude-sonnet-4-6', max_tokens: 500,
+      system: 'You are a sales assistant deciding how to handle an inbound Instagram message for an industrial electrical components business (nickel strips, busbars, connectors). Read the message, the customer\'s CRM history, and the product catalog, then decide what should happen next. Return ONLY valid JSON, no markdown.',
+      messages: [{ role: 'user', content: `Instagram ${kind} from ${cust.name} (CRM status: ${c.status || 'new contact'}):
+"${body}"
+
+Known requirement: ${c.requirement || 'none on file'}
+Past interests: ${interests.map(i => i.interest + (i.quantity ? ' x ' + i.quantity : '')).join('; ') || 'none'}
+Recent notes: ${discussions.map(d => '- ' + d.note).join('\n') || 'none'}
+
+Product catalog (price is per-unit, MOQ is the minimum order quantity): ${products.map(p => `[ID:${p.id}] ${p.sku} - ${p.name} (${p.category}) — ${p.new_price || p.price || 'price n/a'}${p.unit ? '/' + p.unit : ''}, MOQ ${p.min_quantity || 1}`).join('\n')}
+
+Decide and return JSON:
+{
+  "intent": "one short phrase, e.g. 'pricing enquiry for busbar'",
+  "action": "auto_reply" | "send_quote" | "nurture" | "escalate",
+  "confidence": "high" | "low",
+  "suggested_reply": "a reply Rohan could send as-is, or empty string if action is escalate",
+  "reasoning": "one sentence"
+}
+"escalate" = complaint, bulk/custom enquiry, or anything you're not confident about. "auto_reply" = a simple factual question you can answer outright. "send_quote" = a clear ask for a specific product's price/availability — the catalog above already has real prices and MOQ, so quote them directly in suggested_reply instead of asking the customer to wait for pricing. "nurture" = interested but missing details (volume, spec, timeline, city) — suggested_reply should ask for those.` }]
+    });
+    const match = msg.content[0].text.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : null;
+  } catch (e) {
+    console.log('IG decide error:', e.message);
+    return null;
+  }
+}
+
+// Sends only ever fire from a human clicking Approve in instagram-inbox.html —
+// see the two /api/instagram/messages/:id/* routes below. Nothing auto-sends.
+async function igSendDM(recipientExternalId, text) {
+  const r = await fetch(`${IG_API}/${IG_USER_ID}/messages?access_token=${IG_TOKEN}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recipient: { id: recipientExternalId }, message: { text } })
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || 'Instagram DM send failed');
+  return j.message_id || '';
+}
+async function igReplyComment(commentId, text) {
+  const r = await fetch(`${IG_API}/${commentId}/replies?access_token=${IG_TOKEN}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `message=${encodeURIComponent(text)}`
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || 'Instagram comment reply failed');
+  return j.id || '';
+}
+
 app.get('/api/instagram/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -1513,10 +1581,13 @@ app.post('/api/instagram/webhook', async (req, res) => {
         const body = m.message?.text || (m.message?.attachments ? `[${m.message.attachments[0]?.type || 'attachment'}]` : '[unsupported]');
         const handle = await igFetchUsername(senderId);
         const cust = findOrCreateCustomerByInstagram(senderId, handle);
-        db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author) VALUES (?,?,?,?,?,?,?,?)')
-          .run(cust.id, senderId, handle || '', 'in', 'dm', body, m.message?.mid || '', '');
+        const decision = await decideInstagramAction(cust, body, 'dm');
+        db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author, ai_intent, ai_action, ai_confidence, ai_reply, ai_reasoning) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(cust.id, senderId, handle || '', 'in', 'dm', body, m.message?.mid || '', '',
+            decision?.intent || '', decision?.action || 'escalate', decision?.confidence || 'low', decision?.suggested_reply || '', decision?.reasoning || '');
         try {
-          const notifBody = `${cust.name} (IG DM): ${body}`.slice(0, 200);
+          const verdict = decision ? ` → ${decision.action} (${decision.confidence})` : '';
+          const notifBody = `${cust.name} (IG DM): ${body}${verdict}`.slice(0, 200);
           db.prepare('INSERT INTO notifications (customer_id, type, body) VALUES (?,?,?)').run(cust.id, 'ig_message', notifBody);
         } catch (e) {}
       }
@@ -1530,10 +1601,13 @@ app.post('/api/instagram/webhook', async (req, res) => {
         const handle = value.from?.username || null;
         const body = value.text || '';
         const cust = findOrCreateCustomerByInstagram(senderId, handle);
-        db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author) VALUES (?,?,?,?,?,?,?,?)')
-          .run(cust.id, senderId, handle || '', 'in', 'comment', body, value.id || '', '');
+        const decision = await decideInstagramAction(cust, body, 'comment');
+        db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author, ai_intent, ai_action, ai_confidence, ai_reply, ai_reasoning) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(cust.id, senderId, handle || '', 'in', 'comment', body, value.id || '', '',
+            decision?.intent || '', decision?.action || 'escalate', decision?.confidence || 'low', decision?.suggested_reply || '', decision?.reasoning || '');
         try {
-          const notifBody = `${cust.name} (IG comment): ${body}`.slice(0, 200);
+          const verdict = decision ? ` → ${decision.action} (${decision.confidence})` : '';
+          const notifBody = `${cust.name} (IG comment): ${body}${verdict}`.slice(0, 200);
           db.prepare('INSERT INTO notifications (customer_id, type, body) VALUES (?,?,?)').run(cust.id, 'ig_message', notifBody);
         } catch (e) {}
       }
@@ -1543,6 +1617,43 @@ app.post('/api/instagram/webhook', async (req, res) => {
     console.log('IG webhook error:', e.message);
     res.sendStatus(200); // always 200 so Meta doesn't retry-storm
   }
+});
+
+// ── Instagram activity feed + reply approval ──────────────────────────
+// The whole point: decideInstagramAction() only ever drafts. A message stays
+// here until Rohan approves (send as drafted or edited) or rejects it.
+app.get('/api/instagram/messages', (req, res) => {
+  const status = req.query.status || '';
+  let sql = `SELECT im.*, c.name as customer_name, c.id as customer_id
+             FROM instagram_messages im LEFT JOIN customers_v2 c ON c.id = im.customer_id
+             WHERE im.direction='in'`;
+  const params = [];
+  if (status === 'pending') sql += " AND (im.reply_status='' OR im.reply_status IS NULL)";
+  else if (status) { sql += ' AND im.reply_status=?'; params.push(status); }
+  sql += ' ORDER BY im.created_at DESC LIMIT 150';
+  res.json({ data: db.prepare(sql).all(...params) });
+});
+
+app.post('/api/instagram/messages/:id/approve', async (req, res) => {
+  try {
+    const row = db.prepare('SELECT * FROM instagram_messages WHERE id=?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (row.reply_status === 'sent') return res.status(400).json({ error: 'Already sent' });
+    const text = String(req.body?.text ?? row.ai_reply ?? '').trim();
+    if (!text) return res.status(400).json({ error: 'No reply text to send' });
+    const sentId = row.kind === 'comment'
+      ? await igReplyComment(row.ig_msg_id, text)
+      : await igSendDM(row.external_id, text);
+    db.prepare("UPDATE instagram_messages SET reply_status='sent', replied_at=datetime('now') WHERE id=?").run(row.id);
+    db.prepare('INSERT INTO instagram_messages (customer_id, external_id, handle, direction, kind, body, ig_msg_id, author) VALUES (?,?,?,?,?,?,?,?)')
+      .run(row.customer_id, row.external_id, row.handle, 'out', row.kind, text, sentId, req.body?.author || 'Rohan');
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/instagram/messages/:id/reject', (req, res) => {
+  db.prepare("UPDATE instagram_messages SET reply_status='rejected' WHERE id=?").run(req.params.id);
+  res.json({ success: true });
 });
 
 // ── Image rename to id_sku_category_name_N ───────────────────────────

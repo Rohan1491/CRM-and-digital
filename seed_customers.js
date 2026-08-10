@@ -4,7 +4,9 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const db = new Database(path.join(__dirname, 'shopmanager.db'));
+// Must match server.js's own resolution, or this seeds a db file the server never reads.
+const dbFile = process.env.DB_PATH || path.join(__dirname, 'shopmanager.db');
+const db = new Database(dbFile);
 
 // ── Schema ────────────────────────────────────────────────────
 db.exec(`
@@ -44,9 +46,9 @@ db.exec(`
   );
 `);
 
-const existing = db.prepare("SELECT COUNT(*) as c FROM customers_v2").get();
-if (existing.c > 0) {
-  console.log(`Customers already seeded (${existing.c}). Skipping.`);
+const alreadySeeded = db.prepare("SELECT COUNT(*) as c FROM customers_v2 WHERE source IN ('Rohan List','Saurabh List','Expo Register','Expo Visitors')").get().c;
+if (alreadySeeded > 0) {
+  console.log(`customers_data.json already seeded (${alreadySeeded} rows carry its sources). Skipping.`);
   process.exit(0);
 }
 
@@ -58,9 +60,30 @@ if (!fs.existsSync(dataPath)) {
 
 const customers = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
 
+// customers_v2.status is constrained in the app UI to exactly 4 values (see server.js
+// APPROVED_STATUSES). The extracted sheet has many rows where an unrelated column
+// (an exhibition tag, a contact's name, a stray row number) leaked into "status" —
+// map what's recognizable, and for anything else fall back to 'Lead' rather than
+// inventing a 5th status, keeping the original text in remark so nothing is lost.
+// Matches server.js's own idempotent status migration, so this stays consistent
+// with the mapping already encoded there (Active -> Onboarded, not "still active").
+const STATUS_MAP = {
+  'active': 'Onboarded',
+  'chasing': 'Contacted and Has Potential',
+  'lead': 'Lead',
+  'settled': 'Onboarded',
+};
+function normalizeStatus(raw, remark) {
+  const key = String(raw || '').trim().toLowerCase();
+  if (STATUS_MAP[key]) return { status: STATUS_MAP[key], remark };
+  if (!key) return { status: 'Lead', remark };
+  const tagged = `[raw status: ${raw}]${remark ? ' ' + remark : ''}`;
+  return { status: 'Lead', remark: tagged };
+}
+
 const insertCustomer = db.prepare(`
-  INSERT INTO customers_v2 (name,company,phone,email,city,assigned_to,status,source,requirement,followup_action,next_followup,remark)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO customers_v2 (name,company,phone,email,city,assigned_to,status,source,requirement,followup_action,next_followup,remark,customer_type)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 `);
 
 const insertDiscussion = db.prepare(`
@@ -70,11 +93,12 @@ const insertDiscussion = db.prepare(`
 
 const seedAll = db.transaction(() => {
   for (const c of customers) {
+    const { status, remark } = normalizeStatus(c.status, c.remark || '');
     const r = insertCustomer.run(
       c.name, c.company||'', c.phone||'', c.email||'', c.city||'',
-      c.assigned_to||'', c.status||'Lead', c.source||'',
+      c.assigned_to||'', status, c.source||'',
       c.requirement||'', c.followup_action||'',
-      c.next_followup||'', c.remark||''
+      c.next_followup||'', remark, 'Others'
     );
     const cid = r.lastInsertRowid;
 
