@@ -1649,7 +1649,7 @@ app.get('/api/crm/invoices/:id/pdf', (req, res) => {
   // Items table — no width/thickness/grade
   let TY = HY + 135;
   const cols = [
-    { label: 'Sr', w: 25 }, { label: 'HSN CODE', w: 65 }, { label: 'DESCRIPTION OF GOODS', w: 180 },
+    { label: 'Sr', w: 25 }, { label: 'SKU', w: 50 }, { label: 'HSN CODE', w: 65 }, { label: 'DESCRIPTION OF GOODS', w: 150 },
     { label: 'QTY', w: 40 }, { label: 'PER KG\nRATE', w: 60 }, { label: 'P&F/\nFREIGHT', w: 55 },
     { label: 'TAXABLE\nVALUE', w: 65 }, { label: 'IGST %', w: 40 }, { label: 'Date', w: 55 }
   ];
@@ -1670,7 +1670,7 @@ app.get('/api/crm/invoices/:id/pdf', (req, res) => {
     doc.rect(LX, TY, W, rh).stroke();
     cx = LX;
     const vals = [
-      i + 1, it.hsn || '85079090', it.description || '',
+      i + 1, it.sku || '', it.hsn || '85079090', it.description || '',
       it.qty || '', parseFloat(it.rate || 0).toFixed(2),
       parseFloat(it.pf_freight || 0).toFixed(2), parseFloat(it.taxable || 0).toFixed(2),
       it.igst || '18', invDate

@@ -1951,7 +1951,7 @@ let _piRowId = 0;
 function addPIRow(cid) {
   const rid = ++_piRowId;
   const container = document.getElementById('piItems-' + cid);
-  const productOpts = allProducts.map(p => `<option value="${esc(p.name)}" data-price="${p.price||p.new_price||0}" data-hsn="85079090">${esc(p.name)}</option>`).join('');
+  const productOpts = allProducts.map(p => `<option value="${esc(p.name)}" data-price="${p.price||p.new_price||0}" data-hsn="85079090" data-sku="${esc(p.sku||'')}">${esc(p.name)}</option>`).join('');
   container.insertAdjacentHTML('beforeend', `
     <div id="piRow-${rid}" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:6px;background:var(--card)">
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
@@ -1964,11 +1964,14 @@ function addPIRow(cid) {
       </div>
       <input type="text" id="piDesc-${rid}" placeholder="Description" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div><label style="font-size:9px;color:var(--muted)">SKU</label><input type="text" id="piSku-${rid}" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px"></div>
         <div><label style="font-size:9px;color:var(--muted)">HSN Code</label><input type="text" id="piHsn-${rid}" value="85079090" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px"></div>
-        <div><label style="font-size:9px;color:var(--muted)">QTY (kg)</label><input type="number" id="piQ-${rid}" value="1" min="1" oninput="calcPIRow(${rid})" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+        <div><label style="font-size:9px;color:var(--muted)">QTY (kg)</label><input type="number" id="piQ-${rid}" value="1" min="1" oninput="calcPIRow(${rid})" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px"></div>
         <div><label style="font-size:9px;color:var(--muted)">Rate/kg</label><input type="number" id="piR-${rid}" value="0" step="0.01" oninput="calcPIRow(${rid})" style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
         <div><label style="font-size:9px;color:var(--muted)">Taxable</label><input type="text" id="piTax-${rid}" value="0.00" readonly style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:#f1f5f9;font-weight:700"></div>
       </div>
     </div>
@@ -1983,6 +1986,7 @@ function onPIProductChange(rid) {
     document.getElementById('piDesc-' + rid).focus();
   } else if (sel.value) {
     document.getElementById('piDesc-' + rid).value = sel.value;
+    document.getElementById('piSku-' + rid).value = opt.dataset.sku || '';
     const price = parseFloat(opt.dataset.price) || 0;
     document.getElementById('piR-' + rid).value = price;
     calcPIRow(rid);
@@ -2003,6 +2007,7 @@ function collectPIRows(cid) {
   rows.forEach(row => {
     const rid = row.id.split('-')[1];
     items.push({
+      sku: document.getElementById('piSku-' + rid).value,
       hsn: document.getElementById('piHsn-' + rid).value,
       description: document.getElementById('piDesc-' + rid).value,
       qty: document.getElementById('piQ-' + rid).value,
