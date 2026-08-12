@@ -1656,6 +1656,160 @@ app.post('/api/instagram/messages/:id/reject', (req, res) => {
   res.json({ success: true });
 });
 
+// ── BytePlus ModelArk — image generation ───────────────────────
+// REST API docs: https://docs.byteplus.com/en/docs/ModelArk/1541523
+const BYTEPLUS_REGIONS = {
+  'ap-southeast-1': 'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations',
+  'eu-west-1': 'https://ark.eu-west.bytepluses.com/api/v3/images/generations',
+};
+
+const BYTEPLUS_MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' };
+
+// Real logo, always fed in as a reference — never let the model invent or
+// approximate the wordmark. Copied into assets/ (not read from outside the
+// app) so the path still resolves once this is deployed.
+const LOGO_PATH = path.join(__dirname, 'assets', 'arambhika-logo.jpeg');
+
+app.post('/api/byteplus/generate-image', async (req, res) => {
+  try {
+    const key = process.env.BYTEPLUS_API_KEY;
+    if (!key) return res.status(400).json({ error: 'BYTEPLUS_API_KEY not set in .env' });
+    const { model, size, watermark, response_format, region, referenceImage, imageUrl } = req.body;
+    let { prompt } = req.body;
+    if (!model || !prompt) return res.status(400).json({ error: 'model and prompt are required' });
+
+    // Base64-encode local references (works on localhost and once deployed,
+    // since BytePlus's servers can never reach localhost). imageUrl is used
+    // as-is instead — the "regenerate with feedback" flow passes the previous
+    // BytePlus result URL straight through; that image already has the logo
+    // baked in from its own generation, so the logo isn't re-added there.
+    let image;
+    if (imageUrl) {
+      image = imageUrl;
+    } else {
+      const refs = [];
+      const noteLines = [];
+      if (fs.existsSync(LOGO_PATH)) {
+        refs.push(`data:image/jpeg;base64,${fs.readFileSync(LOGO_PATH).toString('base64')}`);
+        noteLines.push(`Reference image ${refs.length} is the exact Arambhika Enablers logo (wordmark + bolt icon) — reproduce it exactly as shown, do not redraw, restyle, or approximate it.`);
+      }
+      if (referenceImage) {
+        const safeName = path.basename(referenceImage);
+        const filePath = path.join(uploadsDir, safeName);
+        if (!fs.existsSync(filePath)) return res.status(400).json({ error: `Reference image ${safeName} not found` });
+        const ext = path.extname(safeName).toLowerCase();
+        const mime = BYTEPLUS_MIME[ext];
+        if (!mime) return res.status(400).json({ error: `Unsupported reference image format: ${ext}` });
+        refs.push(`data:${mime};base64,${fs.readFileSync(filePath).toString('base64')}`);
+        noteLines.push(`Reference image ${refs.length} is the exact product photo — keep it accurate and unaltered.`);
+      }
+      if (refs.length) {
+        image = refs.length === 1 ? refs[0] : refs;
+        prompt = noteLines.join(' ') + '\n\n' + prompt;
+      }
+    }
+
+    const url = BYTEPLUS_REGIONS[region] || BYTEPLUS_REGIONS['ap-southeast-1'];
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        prompt,
+        ...(image ? { image } : {}),
+        size: size || '2K',
+        watermark: watermark !== false,
+        response_format: response_format || 'url',
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) return res.status(r.status || 500).json({ error: j.error?.message || j.error || 'BytePlus request failed' });
+    res.json(j);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Anthropic — Instagram caption / LinkedIn post generation ───
+// Claude Haiku 4.5 — the cheapest current Claude model — is plenty for a
+// short social caption/post and keeps this cheap to run on every click.
+app.post('/api/anthropic/generate-caption', async (req, res) => {
+  try {
+    const { prompt, productContext } = req.body;
+    if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msg = await client.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 300,
+      system: 'You write Instagram captions for Arambhika Enablers, a B2B manufacturer of nickel strips, copper busbars, and battery connectors for EV/ESS battery pack makers in India. Write one caption: 2-4 short sentences, confident and technical (not gimmicky), end with a clear CTA line like "WhatsApp for Bulk Quote — 2hr response", then 4-6 relevant hashtags on a new line. Do not invent specific numbers, percentages, certifications, customer names/counts, or contact details that were not given to you — if no product facts are supplied, keep any technical claims general and qualitative instead of fabricating specifics. Return ONLY the caption text, no preamble, no quotes, no markdown.',
+      messages: [{
+        role: 'user',
+        content: `Write an Instagram caption for this image.\n\nImage brief: ${prompt}${productContext ? `\n\nProduct facts to reference accurately (do not invent numbers): ${productContext}` : ''}`,
+      }],
+    });
+    res.json({ caption: msg.content[0].text.trim() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/anthropic/generate-linkedin-post', async (req, res) => {
+  try {
+    const { topic, productContext } = req.body;
+    if (!topic) return res.status(400).json({ error: 'topic is required' });
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const msg = await client.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 500,
+      system: 'You write LinkedIn posts for the Arambhika Enablers company page — a B2B manufacturer of nickel strips, copper busbars, and battery connectors for EV and energy storage (ESS) battery pack makers in India. Audience: procurement managers, battery pack engineers, EV/ESS OEMs. Tone: professional, confident, specific — no hype, no emoji spam (at most 1-2 tasteful emoji), no clickbait. Structure: a strong opening line, 2-4 short paragraphs or a brief bulleted list of specifics, a clear CTA (e.g. "DM us or WhatsApp for a bulk quote"), then 3-5 relevant hashtags on their own line at the end. Never invent specific numbers, percentages, certifications, customer names/counts, testimonials, or contact details (phone numbers, placeholders like "[your number]") that were not given to you — if no product facts are supplied, keep technical claims general and qualitative and let the CTA be a plain "DM us" / "WhatsApp us" with no fabricated number. Return ONLY the post text — no preamble, no quotes, no markdown formatting (the trailing hashtags are fine).',
+      messages: [{
+        role: 'user',
+        content: `Write a LinkedIn post about: ${topic}${productContext ? `\n\nProduct facts to reference accurately (do not invent numbers): ${productContext}` : ''}`,
+      }],
+    });
+    res.json({ post: msg.content[0].text.trim() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Instagram content publishing — feed post / carousel ────────
+// https://developers.facebook.com/docs/instagram-platform/content-publishing/
+// Only ever called by a human clicking Approve & Post in image-generator.html.
+// image_url must be publicly reachable — BytePlus's own result URLs work
+// directly (valid 24h), no re-hosting needed.
+async function igCreateContainer(params) {
+  const r = await fetch(`${IG_API}/${IG_USER_ID}/media?access_token=${IG_TOKEN}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params).toString(),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || 'Instagram container creation failed');
+  return j.id;
+}
+
+app.post('/api/instagram/publish', async (req, res) => {
+  try {
+    if (!IG_TOKEN || !IG_USER_ID) return res.status(400).json({ error: 'Instagram not configured (IG_ACCESS_TOKEN/IG_USER_ID)' });
+    const { images, caption } = req.body;
+    if (!Array.isArray(images) || !images.length) return res.status(400).json({ error: 'images array required' });
+    if (images.length > 10) return res.status(400).json({ error: 'Max 10 images per carousel' });
+
+    let creationId;
+    if (images.length === 1) {
+      creationId = await igCreateContainer({ image_url: images[0], caption: caption || '', is_ai_generated: 'true' });
+    } else {
+      const childIds = [];
+      for (const url of images) {
+        childIds.push(await igCreateContainer({ image_url: url, is_carousel_item: 'true' }));
+      }
+      creationId = await igCreateContainer({ media_type: 'CAROUSEL', children: childIds.join(','), caption: caption || '', is_ai_generated: 'true' });
+    }
+
+    const pubRes = await fetch(`${IG_API}/${IG_USER_ID}/media_publish?access_token=${IG_TOKEN}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ creation_id: creationId }).toString(),
+    });
+    const pubJ = await pubRes.json();
+    if (pubJ.error) throw new Error(pubJ.error.message || 'Instagram publish failed');
+    res.json({ success: true, mediaId: pubJ.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Image rename to id_sku_category_name_N ───────────────────────────
 app.post('/api/products/:id/rename-images', (req, res) => {
   try {
