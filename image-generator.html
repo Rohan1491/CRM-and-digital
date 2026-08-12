@@ -25,7 +25,7 @@
 .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
 .field { margin-bottom:14px; }
 .field label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:5px; text-transform:uppercase; letter-spacing:.3px; }
-.field .hint { font-size:11.5px; color:var(--muted); margin-top:4px; line-height:1.4; }
+.field .hint, .hint { font-size:11.5px; color:var(--muted); margin-top:4px; line-height:1.4; }
 input[type=text], textarea, select {
   width:100%; border:1px solid var(--border); border-radius:8px; padding:9px 11px;
   font-size:13.5px; font-family:inherit; outline:none; color:var(--text); background:#fff;
@@ -142,7 +142,6 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
         <div class="field">
           <label>Model ID</label>
           <input type="text" id="fModel" placeholder="e.g. dola-seedream-5-0-pro-260628" value="dola-seedream-5-0-pro-260628">
-          <div class="hint">The exact Model ID or inference Endpoint ID from your BytePlus console (ModelArk → Model List / API Key page). Different accounts have access to different model versions.</div>
         </div>
         <div class="field">
           <label>Template</label>
@@ -162,24 +161,6 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
         <div class="field">
           <label>Prompt</label>
           <textarea id="fPrompt" placeholder="Describe the image you want..." rows="8"></textarea>
-          <div class="hint">Loaded from the selected template — edit freely. Select a reference product below to fold in real specs automatically.</div>
-        </div>
-        <div class="row">
-          <div class="field">
-            <label>Size</label>
-            <select id="fSize">
-              <option value="1K">1K</option>
-              <option value="1.5K">1.5K</option>
-              <option value="2K" selected>2K</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Region</label>
-            <select id="fRegion">
-              <option value="ap-southeast-1" selected>ap-southeast-1</option>
-              <option value="eu-west-1">eu-west-1</option>
-            </select>
-          </div>
         </div>
         <div class="checkbox-row">
           <input type="checkbox" id="fWatermark">
@@ -231,17 +212,20 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
       </div>
     </div>
 
-    <div id="modeLinkedin" class="layout" style="display:none">
+    <div id="modeLinkedin" class="layout-3col" style="display:none">
       <div class="card">
+        <h3 class="section-title">1 · Post Brief</h3>
         <div class="field">
           <label>Topic / brief</label>
           <textarea id="liTopic" placeholder="e.g. Announcing our new NP5 pure nickel strip for EV battery pack assembly — talk about plating options and typical MOQ" rows="6"></textarea>
-          <div class="hint">What the post should be about. Select a reference product below to fold in real price/spec facts automatically.</div>
         </div>
         <button class="btn btn-primary" id="liGenBtn" onclick="generateLinkedInPost()">Generate Post</button>
+      </div>
 
-        <div class="ref-section">
-          <label>Reference product (optional)</label>
+      <div class="card">
+        <h3 class="section-title">2 · Reference Product</h3>
+        <div class="ref-section" style="margin-top:0">
+          <div class="hint" style="margin:-2px 0 8px">Optional — folds real price/spec facts into the post.</div>
           <div class="ref-selected-bar" id="liRefSelectedBar">
             <div class="ref-selected-top">
               <img id="liRefSelectedImg" src="" alt="">
@@ -257,8 +241,8 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
 
       <div>
         <div class="card li-result" id="liResultPanel">
+          <h3 class="section-title">3 · Generated Post</h3>
           <div class="field" style="margin-bottom:10px">
-            <label>Generated post</label>
             <textarea id="liPostText" placeholder="Click Generate Post — the draft will appear here, editable before you post it yourself." rows="12"></textarea>
           </div>
           <button class="btn btn-sm" id="liCopyBtn" onclick="copyLinkedInPost()">Copy post</button>
@@ -275,6 +259,8 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
 let gallery = [];
 let allProducts = [];
 let selectedRef = null; // full product row + filename
+const DEFAULT_SIZE = '2K';
+const DEFAULT_REGION = 'ap-southeast-1';
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -424,8 +410,8 @@ async function callGenerate(opts) {
 async function generateImage() {
   const model = document.getElementById('fModel').value.trim();
   const basePrompt = document.getElementById('fPrompt').value.trim();
-  const size = document.getElementById('fSize').value;
-  const region = document.getElementById('fRegion').value;
+  const size = DEFAULT_SIZE;
+  const region = DEFAULT_REGION;
   const watermark = document.getElementById('fWatermark').checked;
   const btn = document.getElementById('genBtn');
   const panel = document.getElementById('resultPanel');
@@ -472,8 +458,8 @@ async function regenerateSlide(i) {
   if (!feedback) { toast('Add a comment describing what to change', 'error'); return; }
 
   const model = document.getElementById('fModel').value.trim();
-  const size = document.getElementById('fSize').value;
-  const region = document.getElementById('fRegion').value;
+  const size = DEFAULT_SIZE;
+  const region = DEFAULT_REGION;
   const watermark = document.getElementById('fWatermark').checked;
   const slide = currentSet[i];
 
