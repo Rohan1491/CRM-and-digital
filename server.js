@@ -5,6 +5,7 @@ const Database = require('better-sqlite3');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const PDFDocument = require('pdfkit');
 const app = express();
@@ -1739,7 +1740,7 @@ app.post('/api/anthropic/generate-caption', async (req, res) => {
     const msg = await client.messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 300,
-      system: 'You write Instagram captions for Arambhika Enablers, a B2B manufacturer of nickel strips, copper busbars, and battery connectors for EV/ESS battery pack makers in India. Write one caption: 2-4 short sentences, confident and technical (not gimmicky), end with a clear CTA line like "WhatsApp for Bulk Quote — 2hr response", then 4-6 relevant hashtags on a new line. Do not invent specific numbers, percentages, certifications, customer names/counts, or contact details that were not given to you — if no product facts are supplied, keep any technical claims general and qualitative instead of fabricating specifics. Return ONLY the caption text, no preamble, no quotes, no markdown.',
+      system: 'You write Instagram captions for Arambhika Enablers, a B2B manufacturer of nickel strips, copper busbars, and battery connectors for EV/ESS battery pack makers in India. Write one caption: 2-4 short sentences, confident and technical (not gimmicky), end with a CTA line using these real contact details verbatim: "WhatsApp +91-9315545821 for Bulk Quote — 2hr response  ·  arambhika.com", then 4-6 relevant hashtags on a new line. Do not invent specific numbers, percentages, certifications, or customer names/counts that were not given to you — if no product facts are supplied, keep any technical claims general and qualitative instead of fabricating specifics; the WhatsApp number and website above are the only contact details you should use, and always use them exactly as given. Return ONLY the caption text, no preamble, no quotes, no markdown.',
       messages: [{
         role: 'user',
         content: `Write an Instagram caption for this image.\n\nImage brief: ${prompt}${productContext ? `\n\nProduct facts to reference accurately (do not invent numbers): ${productContext}` : ''}`,
@@ -1807,6 +1808,123 @@ app.post('/api/instagram/publish', async (req, res) => {
     const pubJ = await pubRes.json();
     if (pubJ.error) throw new Error(pubJ.error.message || 'Instagram publish failed');
     res.json({ success: true, mediaId: pubJ.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── LinkedIn — OAuth + Posts API (personal-profile posting) ────
+// Docs (fetched live, not from training memory — LinkedIn's API changes
+// often): learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/sign-in-with-linkedin-v2
+// and learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api
+const LINKEDIN_API_VERSION = '202507'; // YYYYMM, required on every Posts API call
+let linkedinOAuthState = null; // single-user internal tool — one pending flow at a time is fine
+
+// Persists a token to .env (and the running process) so it survives a
+// restart without needing the OAuth flow again. .env is gitignored.
+function updateEnvVar(key, value) {
+  const envPath = path.join(__dirname, '.env');
+  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+  const line = `${key}=${value}`;
+  const re = new RegExp(`^${key}=.*$`, 'm');
+  content = re.test(content) ? content.replace(re, line) : (content.replace(/\n?$/, '\n') + line + '\n');
+  fs.writeFileSync(envPath, content);
+  process.env[key] = value;
+}
+
+app.get('/auth/linkedin', (req, res) => {
+  const clientId = process.env.LINKEDIN_CLIENT_ID;
+  const redirectUri = process.env.LINKEDIN_REDIRECT_URI;
+  if (!clientId || !redirectUri) return res.status(400).send('LinkedIn not configured — set LINKEDIN_CLIENT_ID/LINKEDIN_CLIENT_SECRET/LINKEDIN_REDIRECT_URI in .env');
+  linkedinOAuthState = crypto.randomBytes(16).toString('hex');
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope: 'openid profile w_member_social', // personal-profile posting; w_organization_social needs LinkedIn's separate Company Page review
+    state: linkedinOAuthState,
+  });
+  res.redirect(`https://www.linkedin.com/oauth/v2/authorization?${params.toString()}`);
+});
+
+app.get('/auth/linkedin/callback', async (req, res) => {
+  try {
+    const { code, state, error, error_description } = req.query;
+    if (error) return res.status(400).send(`LinkedIn authorization failed: ${error_description || error}`);
+    if (!code) return res.status(400).send('Missing authorization code');
+    if (!state || state !== linkedinOAuthState) return res.status(400).send('State mismatch — start the connection again from the Content Generator page.');
+    linkedinOAuthState = null;
+
+    const tokenRes = await fetch('https://www.linkedin.com/oauth/v2/accessToken', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: process.env.LINKEDIN_REDIRECT_URI,
+        client_id: process.env.LINKEDIN_CLIENT_ID,
+        client_secret: process.env.LINKEDIN_CLIENT_SECRET,
+      }).toString(),
+    });
+    const tokenJ = await tokenRes.json();
+    if (!tokenRes.ok || tokenJ.error) throw new Error(tokenJ.error_description || tokenJ.error || 'Token exchange failed');
+
+    const meRes = await fetch('https://api.linkedin.com/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenJ.access_token}` },
+    });
+    const meJ = await meRes.json();
+    if (!meRes.ok || !meJ.sub) throw new Error('Could not fetch LinkedIn member profile');
+
+    updateEnvVar('LINKEDIN_ACCESS_TOKEN', tokenJ.access_token);
+    updateEnvVar('LINKEDIN_PERSON_URN', `urn:li:person:${meJ.sub}`);
+
+    res.send(`<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;padding:60px 20px;text-align:center;color:#1e293b">
+      <h2 style="color:#16a34a">LinkedIn connected</h2>
+      <p>Signed in as <strong>${meJ.name || meJ.given_name || 'LinkedIn member'}</strong>.</p>
+      <p>You can close this tab and go back to the Content Generator page.</p>
+    </body></html>`);
+  } catch (e) {
+    res.status(500).send(`LinkedIn connection failed: ${e.message}`);
+  }
+});
+
+app.get('/api/linkedin/status', (req, res) => {
+  res.json({
+    connected: !!(process.env.LINKEDIN_ACCESS_TOKEN && process.env.LINKEDIN_PERSON_URN),
+    configured: !!(process.env.LINKEDIN_CLIENT_ID && process.env.LINKEDIN_REDIRECT_URI),
+  });
+});
+
+// Only ever called by a human clicking Approve & Post in image-generator.html.
+app.post('/api/linkedin/publish', async (req, res) => {
+  try {
+    const token = process.env.LINKEDIN_ACCESS_TOKEN;
+    const author = process.env.LINKEDIN_PERSON_URN;
+    if (!token || !author) return res.status(400).json({ error: 'LinkedIn not connected yet — click "Connect LinkedIn" first' });
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: 'text is required' });
+
+    const r = await fetch('https://api.linkedin.com/rest/posts', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'Linkedin-Version': LINKEDIN_API_VERSION,
+      },
+      body: JSON.stringify({
+        author,
+        commentary: text,
+        visibility: 'PUBLIC',
+        distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] },
+        lifecycleState: 'PUBLISHED',
+        isReshareDisabledByAuthor: false,
+      }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error((j.message || j.error_description) ? (j.message || j.error_description) : `LinkedIn publish failed (${r.status})`);
+    }
+    const postUrn = r.headers.get('x-restli-id');
+    res.json({ success: true, postUrn, permalink: postUrn ? `https://www.linkedin.com/feed/update/${postUrn}/` : null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -106,6 +106,10 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
 .caption-row label { margin:0; }
 .li-result textarea { min-height:220px; }
 .li-note { font-size:11.5px; color:var(--muted); margin-top:8px; line-height:1.4; }
+.li-status { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.li-status .dot { width:7px; height:7px; border-radius:50%; background:#cbd5e1; display:inline-block; }
+.li-status .dot.on { background:#16a34a; }
+.li-status a.btn-sm { text-decoration:none; }
 </style>
 </head>
 <body>
@@ -245,8 +249,12 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
           <div class="field" style="margin-bottom:10px">
             <textarea id="liPostText" placeholder="Click Generate Post — the draft will appear here, editable before you post it yourself." rows="12"></textarea>
           </div>
-          <button class="btn btn-sm" id="liCopyBtn" onclick="copyLinkedInPost()">Copy post</button>
-          <div class="li-note">Direct LinkedIn publishing isn't connected yet — copy this draft and post it manually on the Arambhika Enablers company page.</div>
+          <div class="li-status" id="liStatus">Checking LinkedIn connection…</div>
+          <div class="result-actions" style="margin-top:10px">
+            <button class="btn btn-sm" id="liCopyBtn" onclick="copyLinkedInPost()">Copy post</button>
+            <button class="btn btn-publish btn-sm" id="liPublishBtn" onclick="publishToLinkedIn()" disabled>Post to LinkedIn</button>
+          </div>
+          <div class="publish-note" id="liPublishNote"></div>
         </div>
       </div>
     </div>
@@ -365,7 +373,7 @@ function postTemplate() {
 Keep the reference product photo accurate and unaltered in appearance — do not invent or distort product details, dimensions, or material finish.
 Apply a clean industrial/technical brand treatment: dark navy or steel-grey backdrop with subtle brushed-metal texture, copper/orange accent color, bold sans-serif typography, engineering/spec-sheet aesthetic. Square 1:1 format (1080x1080).
 
-Composition: product centered or off-center with breathing room, Arambhika Enablers logo/wordmark in a corner, bold headline text with the product name near top or bottom, a small spec callout badge (dimensions/plating/price per KG) near the product, and a subtle CTA line at the bottom: "WhatsApp for Bulk Quote — 2hr response".`;
+Composition: product centered or off-center with breathing room, Arambhika Enablers logo/wordmark in a corner, bold headline text with the product name near top or bottom, a small spec callout badge (dimensions/plating/price per KG) near the product, and a subtle CTA line at the bottom: "WhatsApp +91-9315545821 for Bulk Quote — 2hr response  ·  arambhika.com".`;
 }
 
 function carouselTemplate() {
@@ -378,7 +386,7 @@ Apply the same clean industrial/technical brand treatment on every slide for a c
 const SLIDE_FOCUS = [
   'Hero shot — product centered with breathing room, bold headline with the product name, and a small spec callout badge (dimensions/price/MOQ) near the product.',
   'Spec close-up — zoom on a key dimension or plating detail with clean measurement line annotations, same brand treatment, minimal text.',
-  'Application context — the product shown in the context of an EV/ESS battery pack assembly, with the CTA line "WhatsApp for Bulk Quote — 2hr response" at the bottom.',
+  'Application context — the product shown in the context of an EV/ESS battery pack assembly, with the CTA line "WhatsApp +91-9315545821 for Bulk Quote — 2hr response  ·  arambhika.com" at the bottom.',
   'Comparison view — a size or variant comparison relevant to this product line, same visual system, brief callout text.',
 ];
 
@@ -639,6 +647,55 @@ function copyLinkedInPost() {
   navigator.clipboard.writeText(text).then(() => toast('Post copied'));
 }
 
+let liConnected = false;
+
+async function checkLinkedInStatus() {
+  const el = document.getElementById('liStatus');
+  const btn = document.getElementById('liPublishBtn');
+  try {
+    const res = await fetch('/api/linkedin/status');
+    const data = await res.json();
+    liConnected = !!data.connected;
+    if (liConnected) {
+      el.innerHTML = '<span class="dot on"></span> LinkedIn connected';
+      btn.disabled = false;
+    } else if (data.configured) {
+      el.innerHTML = '<span class="dot"></span> LinkedIn not connected — <a class="btn btn-sm" href="/auth/linkedin" target="_blank" rel="noopener">Connect LinkedIn</a>';
+      btn.disabled = true;
+    } else {
+      el.innerHTML = '<span class="dot"></span> LinkedIn API keys not set in .env';
+      btn.disabled = true;
+    }
+  } catch (e) {
+    el.textContent = 'Could not check LinkedIn connection status';
+    btn.disabled = true;
+  }
+}
+
+async function publishToLinkedIn() {
+  const text = document.getElementById('liPostText').value.trim();
+  if (!text) { toast('Generate or write a post first', 'error'); return; }
+  if (!confirm('Post this to your LinkedIn profile now? This is public and can\'t be undone from here.')) return;
+
+  const btn = document.getElementById('liPublishBtn');
+  const note = document.getElementById('liPublishNote');
+  btn.disabled = true; btn.textContent = 'Posting…';
+  try {
+    const res = await fetch('/api/linkedin/publish', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Publish failed');
+    toast('Posted to LinkedIn!');
+    note.innerHTML = data.permalink ? `Posted — <a href="${esc(data.permalink)}" target="_blank" rel="noopener">view on LinkedIn</a>` : 'Posted.';
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Post to LinkedIn';
+  }
+}
+
 function loadFromGallery(url, prompt) {
   currentSet = [{ url, prompt, label: null, size: null }];
   renderResultSet();
@@ -669,6 +726,7 @@ function toast(msg, type='') {
 
 selectTemplate('post');
 loadProductsForRef();
+checkLinkedInStatus();
 </script>
 <script src="js/nav.js"></script>
 </body>
