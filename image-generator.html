@@ -11,10 +11,16 @@
 <style>
 .topbar { background:var(--surface); border-bottom:1px solid var(--border); padding:14px 28px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:50; }
 .topbar h2 { font-size:18px; font-weight:700; }
-.content { padding:24px 28px; flex:1; max-width:1000px; }
+.content { padding:24px 28px; flex:1; max-width:1320px; }
 
 .layout { display:grid; grid-template-columns:360px 1fr; gap:20px; align-items:start; }
 @media (max-width:840px) { .layout { grid-template-columns:1fr; } }
+
+.layout-3col { display:grid; grid-template-columns:300px 300px minmax(320px,1fr); gap:20px; align-items:start; }
+@media (max-width:1180px) { .layout-3col { grid-template-columns:1fr 1fr; } }
+@media (max-width:760px) { .layout-3col { grid-template-columns:1fr; } }
+
+.section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:#6366f1; margin:0 0 16px; padding-bottom:10px; border-bottom:1px solid var(--border); }
 
 .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px 20px; }
 .field { margin-bottom:14px; }
@@ -130,8 +136,9 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
       <button type="button" class="mode-tab" id="tabBtnLinkedin" onclick="switchMode('linkedin')">LinkedIn — Post</button>
     </div>
 
-    <div id="modeInstagram" class="layout">
+    <div id="modeInstagram" class="layout-3col">
       <div class="card">
+        <h3 class="section-title">1 · Generation Settings</h3>
         <div class="field">
           <label>Model ID</label>
           <input type="text" id="fModel" placeholder="e.g. dola-seedream-5-0-pro-260628" value="dola-seedream-5-0-pro-260628">
@@ -179,10 +186,12 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
           <label for="fWatermark" style="margin:0;text-transform:none;font-weight:400;color:var(--text)">Add "AI generated" watermark</label>
         </div>
         <button class="btn btn-primary" id="genBtn" onclick="generateImage()">Generate</button>
+      </div>
 
-        <div class="ref-section">
-          <label>Reference product image (optional)</label>
-          <div class="hint" style="margin:-2px 0 8px">Only products with more than 50kg in stock, or flagged "On Request" in the Products tab, are shown here — so we never post about something we can't actually fulfill.</div>
+      <div class="card">
+        <h3 class="section-title">2 · Reference Product</h3>
+        <div class="ref-section" style="margin-top:0">
+          <div class="hint" style="margin:-2px 0 8px">Optional. Only products with more than 50kg in stock, or flagged "On Request" in the Products tab, are shown here — so we never post about something we can't actually fulfill.</div>
           <div class="ref-selected-bar" id="refSelectedBar">
             <div class="ref-selected-top">
               <img id="refSelectedImg" src="" alt="">
@@ -197,8 +206,11 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
       </div>
 
       <div>
-        <div class="card result-panel" id="resultPanel">
-          <div class="result-empty">Enter a prompt and click Generate.<br>Images take a few seconds to a minute depending on model and size.</div>
+        <div class="card">
+          <h3 class="section-title">3 · Generated Image</h3>
+          <div class="result-panel" id="resultPanel">
+            <div class="result-empty">Enter a prompt and click Generate.<br>Images take a few seconds to a minute depending on model and size.</div>
+          </div>
         </div>
 
         <div class="card publish-card" id="publishCard" style="display:none">
