@@ -126,12 +126,12 @@ textarea { resize:vertical; min-height:90px; line-height:1.5; }
     <a href="admin.html?v=admin" class="nav-link"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Admin</a>
   </nav>
 </aside>
-<div class="sidebar-overlay" id="sbOverlay" onclick="document.querySelector(&quot;.sidebar&quot;).classList.remove(&quot;open&quot;);this.classList.remove(&quot;show&quot;)"></div>
+<div class="sidebar-overlay" id="sbOverlay" onclick="document.querySelector('.sidebar').classList.remove('open');this.classList.remove('show')"></div>
 
 <div class="main">
   <div class="topbar">
     <h2>Content Generator</h2>
-    <button class="btn btn-sm" onclick="sessionStorage.removeItem(&quot;arambhika_auth&quot;);location.replace(&quot;login.html&quot;);" title="Sign out">&#9211; Logout</button>
+    <button class="btn btn-sm" onclick="sessionStorage.removeItem('arambhika_auth');location.replace('login.html');" title="Sign out">&#9211; Logout</button>
   </div>
 
   <div class="content">
@@ -368,12 +368,23 @@ function buildProductContextText(p) {
 
 // ── Templates ────────────────────────────────────────────────
 function postTemplate() {
-  return `Generate a single Instagram post image for Arambhika Enablers, a B2B manufacturer of nickel strips, copper busbars, and battery connectors for EV and energy storage (ESS) battery pack makers in India.
+  return `A square 1:1 (1080×1080) Instagram product advertisement for Arambhika, an Indian B2B manufacturer of nickel strips, copper busbars, and battery connectors for EV and ESS battery pack makers. Clean industrial/technical brand treatment, professional B2B tone.
 
-Keep the reference product photo accurate and unaltered in appearance — do not invent or distort product details, dimensions, or material finish.
-Apply a clean industrial/technical brand treatment: dark navy or steel-grey backdrop with subtle brushed-metal texture, copper/orange accent color, bold sans-serif typography, engineering/spec-sheet aesthetic. Square 1:1 format (1080x1080).
+Reference product: reproduce the supplied product photo exactly as shot — do not alter, restyle, relight, crop the object, or invent details. Preserve true material finish (metallic sheen, plating tone, surface texture), exact proportions, edge profile, hole pattern, and thickness. No added reflections, no fictional variants, no extra units. Cut it out cleanly from its original background with a soft, natural contact shadow.
 
-Composition: product centered or off-center with breathing room, Arambhika Enablers logo/wordmark in a corner, bold headline text with the product name near top or bottom, a small spec callout badge (dimensions/plating/price per KG) near the product, and a subtle CTA line at the bottom: "WhatsApp +91-9315545821 for Bulk Quote — 2hr response  ·  arambhika.com".`;
+Background: flat off-white to light cool-grey, with a very subtle technical grid or fine diagonal facet pattern at low opacity; a faint oversized brand mark watermarked behind the composition. No clutter, no gradients that compete with the product.
+
+Composition: product placed slightly off-center with generous breathing room on all sides; nothing crowds or overlaps the product.
+
+Logo (top-left corner): Arambhika wordmark, small and clean, with comfortable margin from the edge.
+
+Headline (top, right of logo or directly beneath): "[PRODUCT NAME]" in heavy condensed sans-serif, all caps, dark charcoal, tight letter spacing. Optional thin accent rule beneath it.
+
+Spec callout badge (near the product, connected by a thin leader line): a compact rounded rectangle in the brand accent color with white text, three short lines — "[DIMENSIONS]" · "[PLATING/MATERIAL]" · "₹[PRICE]/KG". Small, technical, secondary to the headline.
+
+CTA line (bottom, centered): accent bar with white text — "WhatsApp +91-9315545821· arambhika.com" in a clean sans-serif, letter-spaced, single line.
+
+Style: crisp photo-and-vector hybrid, high contrast, restrained industrial palette (charcoal, steel grey, white, one accent color), sharp legible text rendering, generous negative space, no stock-photo people, no emoji, no decorative clutter.`;
 }
 
 function carouselTemplate() {
